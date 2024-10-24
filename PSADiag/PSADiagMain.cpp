@@ -20,7 +20,7 @@ PsaDiagLib* psaDiag;
 SerialReader* serialReader;
 
 unsigned long lastBsiEmulated = 0;
-bool emulateBsi = false;
+bool emulateBsi = true;
 
 void SendIgnitionMessages(unsigned long currentTime)
 {
@@ -82,10 +82,10 @@ void CANReadTaskFunction(void * parameter)
         if (canId > 0)
         {
             //serialPort->println("Received CAN message");
-            psaDiag->Receive(currentTime, canId, canDataLength, canData);
+            psaDiag->ProcessIncomingMessage(currentTime, canId, canDataLength, canData);
         }
 
-        psaDiag->Process(currentTime);
+        psaDiag->Loop(currentTime);
 
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }

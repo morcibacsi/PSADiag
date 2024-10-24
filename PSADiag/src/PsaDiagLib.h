@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include "../src/Can/ICanMessageSender.h"
 #include "../src/SerialPort/AbstractSerial.h"
-#include "IsoTpFrame.h"
+#include "CAN_TP.hpp"
 
 union uint32_converter {
     struct {
@@ -16,18 +16,21 @@ union uint32_converter {
     } data;
     uint32_t asUInt32_t;
 };
-class PsaDiagLib : public IsoTpFrame
+
+
+class PsaDiagLib
 {
     private:
     ICanMessageSender* _canSender;
     AbsSer* _serial;
+    CAN_TP* _canTp;
 
     uint16_t CAN_EMIT_ID;
     uint16_t CAN_RECV_ID;
 
     uint8_t LIN;
-    bool Dump;
-    bool sendKeepAlives;
+    bool Dump = false;
+    bool sendKeepAlives = false;
 
     uint8_t framesDelayInput;
 
@@ -45,13 +48,16 @@ class PsaDiagLib : public IsoTpFrame
     unsigned long lastKeepAliveSent = 0;
     unsigned long lastKeepAliveReceived = 0;
 
+    uint8_t receivedCanTpPacket[4096];
+    uint16_t receivedCanTpPacketLength;
+
     int receiveDiagFrameSize;
     bool customFrameSize = false;
 
     void PrintOk();
     void PrintError();
     void SendKeepAlive();
-    void ChangeId(uint8_t data[]);
+    void ChangeId(uint8_t data[], uint8_t length);
     void ChangeFrameDelay(uint8_t data[]);
     void Unlock(uint8_t data[]);
     void ChangeLIN(uint8_t data[]);
@@ -62,20 +68,18 @@ class PsaDiagLib : public IsoTpFrame
     void SendRawFrames(uint8_t data[], uint8_t length);
     void SendFrames(uint8_t data[], uint8_t length);
     void LargeFrameSpliting(uint8_t data[], uint8_t length);
-
-    protected:
-    void InternalProcess() override;
-    void ReceiveFinished() override;
+    void PrintArrayToSerial(uint16_t sizeOfByteArray, uint8_t *byteArray, uint8_t startIndex = 0);
 
     public:
-    PsaDiagLib(ICanMessageSender* canSender, AbsSer* serial) : IsoTpFrame(canSender, 0x772, 0x672, 1000)
+    PsaDiagLib(ICanMessageSender* canSender, AbsSer* serial)
     {
         _canSender = canSender;
         _serial = serial;
+        _canTp = new CAN_TP(canSender, 0x772, 0x672);
     };
     void ParseCommand(uint8_t data[], uint8_t length);
     void Loop(unsigned long currentTime);
-    void ProcessMessage(unsigned long currentTime, uint16_t canId, uint8_t canMessageLength, uint8_t data[]);
+    void ProcessIncomingMessage(unsigned long currentTime, uint16_t canId, uint8_t canMessageLength, uint8_t data[]);
     virtual ~PsaDiagLib(){ }
 };
 #endif

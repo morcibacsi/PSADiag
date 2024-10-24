@@ -54,7 +54,7 @@ void PsaDiagLib::ParseCommand(uint8_t data[], uint8_t length)
     switch (command)
     {
         case '>':
-            ChangeId(data);
+            ChangeId(data, length);
             break;
         case 'T':
             ChangeFrameDelay(data);
@@ -146,7 +146,7 @@ void PsaDiagLib::SendKeepAlive()
             else
             {
                 uint8_t data[] = { 0x3E };
-                Send(data, 1);
+                _canTp->Send(data, 1);
             }
         }
         else
@@ -160,19 +160,36 @@ void PsaDiagLib::SendKeepAlive()
             else
             {
                 uint8_t data[] = { 0x3E, 0x00 };
-                Send(data, 2);
+                _canTp->Send(data, 2);
             }
         }
     }
 }
 
-void PsaDiagLib::ChangeId(uint8_t data[])
+void PsaDiagLib::ChangeId(uint8_t data[], uint8_t length)
 {
-    // example: >764:664
-    bool parseSuccess = sscanf((char*)data, ">%x:%x", &CAN_EMIT_ID, &CAN_RECV_ID) == 2;
-    if (parseSuccess)
-    {
-        ModifyIds(CAN_EMIT_ID, CAN_RECV_ID);
+    std::string input(reinterpret_cast<char*>(data), length); // Exclude null terminator
+    std::string part1, part2;
+
+    // Find the position of the colon
+    size_t pos = input.find(':');
+    if (pos != std::string::npos) {
+        // Extract parts using substr
+        part1 = input.substr(0, pos);
+        part2 = input.substr(pos + 1); // Start after the colon
+
+        // Remove the first character from part1
+        if (!part1.empty()) {
+            part1.erase(0, 1); // Remove the first character
+        }
+
+        CAN_EMIT_ID = static_cast<uint16_t>(std::stoi(part1, nullptr, 16));
+        CAN_RECV_ID = static_cast<uint16_t>(std::stoi(part2, nullptr, 16));
+
+        //printf("CAN_EMIT_ID: %x\n", CAN_EMIT_ID);
+        //printf("CAN_RECV_ID: %x\n", CAN_RECV_ID);
+
+        _canTp->SetIds(CAN_EMIT_ID, CAN_RECV_ID);
         LIN = 0;
         Dump = false;
         sendKeepAlives = false;
@@ -193,14 +210,14 @@ void PsaDiagLib::ChangeFrameDelay(uint8_t data[])
 void PsaDiagLib::Unlock(uint8_t data[])
 {
     // example: :D91C:03:03
-    bool parseSuccess = sscanf((char*)data, ":%x:%x:%x", &UnlockKey, &UnlockService, &DiagSess) == 2;
+    bool parseSuccess = sscanf((char*)data, ":%hx:%hhx:%hhx", &UnlockKey, &UnlockService, &DiagSess) == 2;
     if (parseSuccess)
     {
         UnlockCMD[0] = 0x27;
         UnlockCMD[1] = UnlockService;
 
         uint8_t diagCmd[2] = { 0x10, DiagSess };
-        Send(diagCmd, 2);
+        _canTp->Send(diagCmd, 2);
 
         if (DiagSess == 0xC0)
         {
@@ -220,7 +237,7 @@ void PsaDiagLib::Unlock(uint8_t data[])
 void PsaDiagLib::ChangeLIN(uint8_t data[])
 {
     //example: L47
-    bool parseSuccess = sscanf((char*)data, "L%x", &LIN) == 1;
+    bool parseSuccess = sscanf((char*)data, "L%hhx", &LIN) == 1;
     if (parseSuccess)
     {
         PrintOk();
@@ -337,38 +354,40 @@ void PsaDiagLib::SendFrames(uint8_t data[], uint8_t length)
         }
         _serial->println();
         //*/
-        Send(converted, messageLength);
+        _canTp->Send(converted, messageLength);
     }
 
     waitingReplySerialCMD = true;
     lastCMDSent = millis();
 }
 
-void PsaDiagLib::InternalProcess()
+void PsaDiagLib::Loop(unsigned long currentTime)
 {
     if (currentTime - lastKeepAliveSent >= 1000)
     {
         lastKeepAliveSent = currentTime;
         SendKeepAlive();
     }
-}
 
-void PsaDiagLib::ReceiveFinished()
-{
-    char tmp[3];
-    for (size_t i = 0; i < _rxMsg.len; i++)
+    CAN_TP::ProcessResult result = _canTp->Process(currentTime, &receivedCanTpPacketLength, receivedCanTpPacket);
+    if (result == CAN_TP::RxSuccess)
     {
-        snprintf(tmp, 3, "%02X", _rxMsg.Buffer[i]);
-        _serial->print(tmp);
+        //serialPort->println("Received CAN-TP message:");
+        PrintArrayToSerial(receivedCanTpPacketLength, receivedCanTpPacket);
     }
-    _serial->println();
 }
 
-void PsaDiagLib::ProcessMessage(unsigned long currentTime, uint16_t canId, uint8_t canMessageLength, uint8_t data[])
+void PsaDiagLib::ProcessIncomingMessage(unsigned long currentTime, uint16_t canId, uint8_t canMessageLength, uint8_t data[])
 {
     uint16_t len = canMessageLength;
     if (canId >= 0)
     {
+        _canTp->ProcessIncomingMessage(currentTime, canId, len, data);
+
+        return;
+
+        // investigate the following code, for Diagnostique it is not needed
+
         bool encap = false;
         if (data[0] >= 0x40 && data[0] <= 0x70) { // UDS or KWP with LIN ECUs, remove encapsulation
           for (int i = 1; i < canMessageLength; i++) {
@@ -388,19 +407,15 @@ void PsaDiagLib::ProcessMessage(unsigned long currentTime, uint16_t canId, uint8
         }
         else
         {
-            char tmp[4];
             if (Dump)
             {
+                char tmp[4];
                 snprintf(tmp, 4, "%02X", canId);
                 _serial->print(tmp);
                 _serial->print(":");
+
+                PrintArrayToSerial(len, data, 1);
             }
-            for (int i = 1; i < len; i++)
-            { // Strip first byte = Data length
-                snprintf(tmp, 3, "%02X", data[i]);
-                _serial->print(tmp);
-            }
-            _serial->println();
         }
 
         if (waitingUnlock && data[0] < 0x10 && data[1] == 0x67 && data[2] == UnlockService)
@@ -415,7 +430,7 @@ void PsaDiagLib::ProcessMessage(unsigned long currentTime, uint16_t canId, uint8
             response.asUInt32_t = compute_response(UnlockKey, challenge.asUInt32_t);
 
             uint8_t data[] = { 0x27, (UnlockService + 1), response.data.byte1, response.data.byte2, response.data.byte3, response.data.byte4};
-            Send(data, 6);
+            _canTp->Send(data, 6);
 
             char tmp[4];
 
@@ -424,15 +439,22 @@ void PsaDiagLib::ProcessMessage(unsigned long currentTime, uint16_t canId, uint8
                 snprintf(tmp, 4, "%02X", CAN_EMIT_ID);
                 _serial->print(tmp);
                 _serial->print(":");
-                for (int i = 0; i < 6; i++)
-                {
-                    snprintf(tmp, 3, "%02X", data[i]);
-                    _serial->print(tmp);
-                }
-                _serial->println();
+
+                PrintArrayToSerial(6, data);
             }
 
             waitingUnlock = false;
         }
     }
+}
+
+void PsaDiagLib::PrintArrayToSerial(uint16_t sizeOfByteArray, uint8_t *byteArray, uint8_t startIndex)
+{
+    char tmp[3];
+    for (uint16_t i = startIndex; i < sizeOfByteArray; i++)
+    {
+        snprintf(tmp, 3, "%02X", byteArray[i]);
+        _serial->print(tmp);
+    }
+    _serial->println();
 }

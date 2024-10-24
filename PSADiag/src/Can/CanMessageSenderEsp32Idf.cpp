@@ -124,12 +124,12 @@ uint8_t CanMessageSenderEsp32Idf::SendMessage(uint16_t canId, uint8_t ext, uint8
         esp_err_t twai_result = twai_transmit(&message, pdMS_TO_TICKS(10));
         if (twai_result == ESP_OK) {
             //_serialPort->println("Message queued for transmission");
-            result = 1;
+            result = 0;
         } else {
             //_serialPort->println("Failed to queue message for transmission: 0x" + String(twai_result, HEX));
             //_serialPort->println("Failed to queue message for transmission");
             //return -1;
-            result = 0;
+            result = 1;
         }
         xSemaphoreGive(canSemaphore);
     }

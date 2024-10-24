@@ -25,7 +25,7 @@ AbsSer* BaseEsp32App::InitSerialPort()
 #endif
 
     serialPort->begin(115200);
-    serialPort->println(bluetoothDeviceName);
+    //serialPort->println(bluetoothDeviceName);
 
     return serialPort;
 }
