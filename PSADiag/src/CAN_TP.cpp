@@ -114,8 +114,11 @@ CAN_TP::ProcessResult CAN_TP::ProcessIncomingMessage(unsigned long millis, uint1
 
             memcpy(rxBuffer + startPos, incomingBuffer + 1, length - 1);
 
+            uint8_t bytesRead = startPos + length - 1;
+            //Serial.print("bytesRead: ");Serial.println(bytesRead);
+
             _consecutiveFrameCounter++;
-            if (startPos + length - 1 >= rxMessageLength)
+            if (bytesRead >= rxMessageLength)
             {
                 _rxState = EndReception; // Full message received
             }

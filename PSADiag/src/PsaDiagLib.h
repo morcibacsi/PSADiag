@@ -29,7 +29,7 @@ class PsaDiagLib
     uint16_t CAN_RECV_ID;
 
     uint8_t LIN;
-    bool Dump = false;
+    bool dump = false;
     bool sendKeepAlives = false;
 
     uint8_t framesDelayInput;
@@ -39,8 +39,8 @@ class PsaDiagLib
     uint8_t DiagSess;
 
     char sendKeepAliveType;
-    bool waitingUnlock;
-    char UnlockCMD[2];
+    bool waitForUnlock;
+    uint8_t UnlockCMD[2];
 
     bool waitingReplySerialCMD = false;
 
@@ -59,7 +59,7 @@ class PsaDiagLib
     void SendKeepAlive();
     void ChangeId(uint8_t data[], uint8_t length);
     void ChangeFrameDelay(uint8_t data[]);
-    void Unlock(uint8_t data[]);
+    void Unlock(uint8_t data[], uint8_t length);
     void ChangeLIN(uint8_t data[]);
     void ChangeFrameSize(uint8_t data[]);
     void ChangeKeepAlive(uint8_t data[]);
@@ -69,6 +69,7 @@ class PsaDiagLib
     void SendFrames(uint8_t data[], uint8_t length);
     void LargeFrameSpliting(uint8_t data[], uint8_t length);
     void PrintArrayToSerial(uint16_t sizeOfByteArray, uint8_t *byteArray, uint8_t startIndex = 0);
+    void ProcessUnwrappedMessage(unsigned long currentTime, uint16_t canId, uint8_t length, uint8_t data[]);
 
     public:
     PsaDiagLib(ICanMessageSender* canSender, AbsSer* serial)
@@ -78,7 +79,7 @@ class PsaDiagLib
         _canTp = new CAN_TP(canSender, 0x772, 0x672);
     };
     void ParseCommand(uint8_t data[], uint8_t length);
-    void Loop(unsigned long currentTime);
+    bool Loop(unsigned long currentTime);
     void ProcessIncomingMessage(unsigned long currentTime, uint16_t canId, uint8_t canMessageLength, uint8_t data[]);
     virtual ~PsaDiagLib(){ }
 };

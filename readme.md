@@ -35,4 +35,3 @@ Take a look at the [commands.md](commands.md) file for the available commands.
 ### Credits
 
 - vlud for the original project
-- altech for the original version of the isotp library (https://github.com/altelch/iso-tp)

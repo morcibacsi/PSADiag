@@ -60,7 +60,7 @@ void PsaDiagLib::ParseCommand(uint8_t data[], uint8_t length)
             ChangeFrameDelay(data);
             break;
         case ':':
-            Unlock(data);
+            Unlock(data, length);
             break;
         case 'V':
             _serial->println("1.9");
@@ -76,11 +76,11 @@ void PsaDiagLib::ParseCommand(uint8_t data[], uint8_t length)
             PrintOk();
             break;
         case 'N':
-            Dump = false;
+            dump = false;
             PrintOk();
             break;
         case 'X':
-            Dump = true;
+            dump = true;
             PrintOk();
             break;
         case 'K':
@@ -191,7 +191,7 @@ void PsaDiagLib::ChangeId(uint8_t data[], uint8_t length)
 
         _canTp->SetIds(CAN_EMIT_ID, CAN_RECV_ID);
         LIN = 0;
-        Dump = false;
+        dump = false;
         sendKeepAlives = false;
         PrintOk();
     }
@@ -207,31 +207,50 @@ void PsaDiagLib::ChangeFrameDelay(uint8_t data[])
     }
 }
 
-void PsaDiagLib::Unlock(uint8_t data[])
+void PsaDiagLib::Unlock(uint8_t data[], uint8_t length)
 {
     // example: :D91C:03:03
-    bool parseSuccess = sscanf((char*)data, ":%hx:%hhx:%hhx", &UnlockKey, &UnlockService, &DiagSess) == 2;
-    if (parseSuccess)
+
+    std::string input(reinterpret_cast<char*>(data), length);
+    std::string part1, part2, part3;
+
+    input.erase(0, 1); // Remove the first character
+    size_t pos = input.find(':');
+    if (pos == std::string::npos)
     {
-        UnlockCMD[0] = 0x27;
-        UnlockCMD[1] = UnlockService;
-
-        uint8_t diagCmd[2] = { 0x10, DiagSess };
-        _canTp->Send(diagCmd, 2);
-
-        if (DiagSess == 0xC0)
-        {
-            //KWP
-            sendKeepAliveType = 'K';
-        }
-        else
-        {
-            //UDS
-            sendKeepAliveType = 'U';
-        }
-        sendKeepAlives = true;
-        waitingUnlock = true;
+        return;
     }
+
+    part1 = input.substr(0, pos);
+    part2 = input.substr(pos + 1,2);
+    part3 = input.substr(pos + 4,2);
+
+    UnlockKey = static_cast<uint16_t>(std::stoi(part1, nullptr, 16));
+    UnlockService = static_cast<uint8_t>(std::stoi(part2, nullptr, 16));
+    DiagSess = static_cast<uint8_t>(std::stoi(part3, nullptr, 16));
+
+    //printf("UnlockKey: %x\n", UnlockKey);
+    //printf("UnlockService: %x\n", UnlockService);
+    //printf("DiagSess: %x\n", DiagSess);
+
+    UnlockCMD[0] = 0x27;
+    UnlockCMD[1] = UnlockService;
+
+    uint8_t diagCmd[2] = { 0x10, DiagSess };
+    _canTp->Send(diagCmd, 2);
+
+    if (DiagSess == 0xC0)
+    {
+        //KWP
+        sendKeepAliveType = 'K';
+    }
+    else
+    {
+        //UDS
+        sendKeepAliveType = 'U';
+    }
+    sendKeepAlives = true;
+    waitForUnlock = true;
 }
 
 void PsaDiagLib::ChangeLIN(uint8_t data[])
@@ -361,7 +380,7 @@ void PsaDiagLib::SendFrames(uint8_t data[], uint8_t length)
     lastCMDSent = millis();
 }
 
-void PsaDiagLib::Loop(unsigned long currentTime)
+bool PsaDiagLib::Loop(unsigned long currentTime)
 {
     if (currentTime - lastKeepAliveSent >= 1000)
     {
@@ -374,7 +393,12 @@ void PsaDiagLib::Loop(unsigned long currentTime)
     {
         //serialPort->println("Received CAN-TP message:");
         PrintArrayToSerial(receivedCanTpPacketLength, receivedCanTpPacket);
+
+        ProcessUnwrappedMessage(currentTime, CAN_RECV_ID, receivedCanTpPacketLength, receivedCanTpPacket);
+
+        return true;
     }
+    return false;
 }
 
 void PsaDiagLib::ProcessIncomingMessage(unsigned long currentTime, uint16_t canId, uint8_t canMessageLength, uint8_t data[])
@@ -384,66 +408,68 @@ void PsaDiagLib::ProcessIncomingMessage(unsigned long currentTime, uint16_t canI
     {
         _canTp->ProcessIncomingMessage(currentTime, canId, len, data);
 
-        return;
+        if (dump)
+        {
+            char tmp[4];
+            snprintf(tmp, 4, "%02X", CAN_EMIT_ID);
+            _serial->print(tmp);
+            _serial->print(":");
 
-        // investigate the following code, for Diagnostique it is not needed
-
-        bool encap = false;
-        if (data[0] >= 0x40 && data[0] <= 0x70) { // UDS or KWP with LIN ECUs, remove encapsulation
-          for (int i = 1; i < canMessageLength; i++) {
-            data[i - 1] = data[i];
-          }
-          len--;
-          encap = true;
+            PrintArrayToSerial(canMessageLength, data);
         }
 
-        if (data[0] < 0x10 && data[1] == 0x7E)
+        if (canId == CAN_RECV_ID && data[0] >= 0x40 && data[0] <= 0x70)
         {
-            lastKeepAliveReceived = currentTime;
-        }
-        else if (data[0] < 0x10 && data[1] == 0x3E)
-        {
-            sendKeepAlives = false; // Diagbox or external tool sending keep-alives, stop sending ours
+            // UDS or KWP with LIN ECUs, remove encapsulation
+            for (int i = 1; i < canMessageLength; i++) {
+                data[i - 1] = data[i];
+            }
+
+            ProcessUnwrappedMessage(currentTime, canId, canMessageLength-1, data);
         }
         else
         {
-            if (Dump)
-            {
-                char tmp[4];
-                snprintf(tmp, 4, "%02X", canId);
-                _serial->print(tmp);
-                _serial->print(":");
-
-                PrintArrayToSerial(len, data, 1);
-            }
+            ProcessUnwrappedMessage(currentTime, canId, canMessageLength, data);
         }
+    }
+}
 
-        if (waitingUnlock && data[0] < 0x10 && data[1] == 0x67 && data[2] == UnlockService)
+void PsaDiagLib::ProcessUnwrappedMessage(unsigned long currentTime, uint16_t canId, uint8_t length, uint8_t data[])
+{
+    if (canId == CAN_EMIT_ID && length == 2 && data[0] == 0x01 && data[1] == 0x3E)
+    {
+        // Diagbox or external tool sending keep-alives, stop sending ours
+        sendKeepAlives = false;
+    }
+
+    if (canId == CAN_RECV_ID && length == 1 && data[0] == 0x7E)
+    {
+        lastKeepAliveReceived = currentTime;
+    }
+
+    if (canId == CAN_RECV_ID && waitForUnlock)
+    {
+        if (length == 2 && data[0] == 0x50 && data[1] == UnlockService)
         {
+            // open diag session success, send query seed command
+            _canTp->Send(UnlockCMD, 2);
+        }
+        if (length == 6 && data[0] == 0x67 && data[1] == UnlockService)
+        {
+            // received seed, compute response and send unlock command
+            waitForUnlock = false;
+
             uint32_converter challenge;
-            challenge.data.byte1 = data[3];
-            challenge.data.byte2 = data[4];
-            challenge.data.byte3 = data[5];
-            challenge.data.byte4 = data[6];
+            challenge.data.byte1 = data[2];
+            challenge.data.byte2 = data[3];
+            challenge.data.byte3 = data[4];
+            challenge.data.byte4 = data[5];
 
             uint32_converter response;
             response.asUInt32_t = compute_response(UnlockKey, challenge.asUInt32_t);
 
             uint8_t data[] = { 0x27, (UnlockService + 1), response.data.byte1, response.data.byte2, response.data.byte3, response.data.byte4};
             _canTp->Send(data, 6);
-
-            char tmp[4];
-
-            if (Dump)
-            {
-                snprintf(tmp, 4, "%02X", CAN_EMIT_ID);
-                _serial->print(tmp);
-                _serial->print(":");
-
-                PrintArrayToSerial(6, data);
-            }
-
-            waitingUnlock = false;
         }
     }
 }
