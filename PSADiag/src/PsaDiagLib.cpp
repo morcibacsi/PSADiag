@@ -1,4 +1,5 @@
 #include "PsaDiagLib.h"
+#include <string>
 
 int hexCharToValue(char c) {
     if (c >= '0' && c <= '9') {

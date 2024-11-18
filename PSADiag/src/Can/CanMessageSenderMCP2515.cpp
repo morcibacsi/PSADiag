@@ -37,7 +37,7 @@ uint8_t CanMessageSenderMCP2515::SendMessage(uint16_t canId, uint8_t ext, uint8_
     return 1;
 }
 
-void CanMessageSenderMCP2515::ReadMessage(uint16_t *canId, uint8_t *len, uint8_t *buf)
+bool CanMessageSenderMCP2515::ReadMessage(uint16_t *canId, uint8_t *len, uint8_t *buf)
 {
     *canId = 0;
     *len = 0;
@@ -55,5 +55,12 @@ void CanMessageSenderMCP2515::ReadMessage(uint16_t *canId, uint8_t *len, uint8_t
             buf[i] = rx_frame.data[i];
             //printf("0x%02X ", rx_frame.data.u8[i]);
         }
+        return true;
     }
+    return false;
+}
+
+void CanMessageSenderMCP2515::Reset()
+{
+
 }

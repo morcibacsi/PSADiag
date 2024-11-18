@@ -1,13 +1,12 @@
 #include "CanMessageSenderEsp32Idf.h"
 #include "driver/gpio.h"
-#include "driver/twai.h"
 
 void CanMessageSenderEsp32Idf::PrintToSerial(uint16_t canId, uint8_t ext, uint8_t sizeOfByteArray, uint8_t *byteArray)
 {
     return;
     //    /*
     //if (!(canId == 0x760 || canId == 0x660 || canId == 0x297 || canId == 0x228))
-    if ((canId < 0x600))
+    if (!(canId == 0x228))
     //if (!(canId == 0x168 || canId == 0x128 || canId == 0x0F6 || canId == 0x036))
     {
         return;
@@ -35,13 +34,13 @@ void CanMessageSenderEsp32Idf::PrintToSerial(uint16_t canId, uint8_t ext, uint8_
     }
 }
 
-CanMessageSenderEsp32Idf::CanMessageSenderEsp32Idf(uint8_t rxPin, uint8_t txPin, bool enableThrottling, AbsSer *serialPort)
+CanMessageSenderEsp32Idf::CanMessageSenderEsp32Idf(uint8_t rxPin, uint8_t txPin, AbsSer *serialPort, uint8_t handle)
 {
     _serialPort = serialPort;
-    _enableThrottling = enableThrottling;
     _prevCanId = 0;
 
-    twai_general_config_t g_config = {.mode = TWAI_MODE_NORMAL,
+    twai_general_config_t g_config = {.controller_id = handle,
+                                     .mode = TWAI_MODE_NORMAL,
                                      .tx_io = (gpio_num_t)txPin, .rx_io = (gpio_num_t)rxPin,
                                      .clkout_io = TWAI_IO_UNUSED, .bus_off_io = TWAI_IO_UNUSED,
                                      .tx_queue_len = 10, .rx_queue_len = 10,
@@ -51,16 +50,7 @@ CanMessageSenderEsp32Idf::CanMessageSenderEsp32Idf(uint8_t rxPin, uint8_t txPin,
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_125KBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
-    esp_err_t result = twai_driver_install(&g_config, &t_config, &f_config);
-
-    if (result == ESP_OK)
-    {
-        _serialPort->println("Driver installed");
-    }
-    else
-    {
-        _serialPort->println("Failed to install driver: 0x" + String(result, HEX));
-    }
+    esp_err_t result = twai_driver_install_v2(&g_config, &t_config, &f_config, &_twai);
 
     canSemaphore = xSemaphoreCreateMutex();
     serialSemaphore = xSemaphoreCreateMutex();
@@ -68,15 +58,9 @@ CanMessageSenderEsp32Idf::CanMessageSenderEsp32Idf(uint8_t rxPin, uint8_t txPin,
 
 void CanMessageSenderEsp32Idf::Init()
 {
-    esp_err_t result = twai_start();
-    if (result == ESP_OK)
-    {
-        _serialPort->println("Driver installed and started");
-    }
-    else
-    {
-        _serialPort->println("Failed to start driver: 0x" + String(result, HEX));
-    }
+    esp_err_t result = twai_start_v2(_twai);
+
+    _alertInit = twai_reconfigure_alerts_v2(_twai, TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF, NULL);
 }
 
 uint8_t CanMessageSenderEsp32Idf::SendMessage(uint16_t canId, uint8_t ext, uint8_t sizeOfByteArray, uint8_t *byteArray)
@@ -87,60 +71,43 @@ uint8_t CanMessageSenderEsp32Idf::SendMessage(uint16_t canId, uint8_t ext, uint8
     message.identifier = canId;
     message.flags = TWAI_MSG_FLAG_NONE;
     message.data_length_code = sizeOfByteArray;
-    for (int i = 0; i < sizeOfByteArray; i++) {
-        message.data[i] = byteArray[i];
-        /*
-        if (canId == 0x036 || canId == 0x0F6 || canId == 0x1A1)
-        {
-        }
-        else
-        {
-            message.data[i] = 0x00;
-        }
-        */
-    }
+    memcpy(message.data, byteArray, sizeOfByteArray);
 
     PrintToSerial(canId, ext, sizeOfByteArray, message.data);
-    //workaround to avoid weird errors on screen
-    if (_enableThrottling)
-    {
-        unsigned long currentTime = millis();
-        if (_prevCanId != canId)
-        {
-            unsigned long delayFromLastTransmission = currentTime - _prevCanIdTime;
-            if (delayFromLastTransmission < 15)
-            {
-                delay(15 - delayFromLastTransmission);
-            }
-            _prevCanIdTime = currentTime;
-            _prevCanId = canId;
-        }
-    }
 
     uint8_t result = 0;
 
     if (xSemaphoreTake(canSemaphore, portMAX_DELAY) == pdTRUE)
     {
-        esp_err_t twai_result = twai_transmit(&message, pdMS_TO_TICKS(10));
-        if (twai_result == ESP_OK) {
+        if (twai_transmit_v2(_twai, &message, pdMS_TO_TICKS(10)) == ESP_OK) {
             //_serialPort->println("Message queued for transmission");
-            result = 0;
+            result = 1;
         } else {
-            //_serialPort->println("Failed to queue message for transmission: 0x" + String(twai_result, HEX));
             //_serialPort->println("Failed to queue message for transmission");
             //return -1;
-            result = 1;
+            result = 0;
         }
         xSemaphoreGive(canSemaphore);
     }
+
+    ///*
+    uint32_t alerts;
+    if (_alertInit == ESP_OK && twai_read_alerts_v2(_twai, &alerts, pdMS_TO_TICKS(0)) == ESP_OK)
+    {
+        if (alerts & TWAI_ALERT_BUS_OFF)
+        {
+            twai_initiate_recovery_v2(_twai);
+        }
+    }
+    //*/
+
     return result;
 }
 
-void CanMessageSenderEsp32Idf::ReadMessage(uint16_t *canId, uint8_t *len, uint8_t *buf)
+bool CanMessageSenderEsp32Idf::ReadMessage(uint16_t *canId, uint8_t *len, uint8_t *buf)
 {
     twai_message_t message;
-    esp_err_t twai_result = twai_receive(&message, pdMS_TO_TICKS(10));
-    if (twai_result == ESP_OK) {
+    if (twai_receive_v2(_twai, &message, pdMS_TO_TICKS(10)) == ESP_OK) {
         if (message.flags == TWAI_MSG_FLAG_NONE || message.flags == TWAI_MSG_FLAG_SS)
         {
             *canId = message.identifier;
@@ -149,11 +116,16 @@ void CanMessageSenderEsp32Idf::ReadMessage(uint16_t *canId, uint8_t *len, uint8_
             {
                 buf[i] = message.data[i];
             }
-            PrintToSerial(*canId, 0, *len, buf);
+            //PrintToSerial(*canId, 0, *len, buf);
         }
+        return true;
     } else {
-        //_serialPort->println("Failed to receive message: 0x" + String(twai_result, HEX));
         //printf("Failed to receive message\n");
-        return;
+        return false;
     }
+}
+
+void CanMessageSenderEsp32Idf::Reset()
+{
+
 }
